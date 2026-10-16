@@ -1,0 +1,156 @@
+diff --git a/Common/3dParty/boost/nc-build.py b/Common/3dParty/boost/nc-build.py
+index 52b99488..c45598fa 100644
+--- a/Common/3dParty/boost/nc-build.py
++++ b/Common/3dParty/boost/nc-build.py
+@@ -76,7 +76,7 @@ def build_and_install():
+     nc.create_install_dir()
+     
+     print( "Running bootstrap..." )
+-    if nc.is_linux() or nc.is_apple_silicon():
++    if nc.is_linux() or nc.is_macos():
+         nc.run_command(
+             [ "./bootstrap.sh", f"--prefix={ nc.install_dir }" ],
+             "Running bootstrap",
+@@ -120,9 +120,9 @@ option.set keep-going : false ;
+     if nc.is_windows():
+         build_cmd.append( "address-model=64" )
+         build_cmd.append( f"architecture={ boost_arch }" )
+-    if nc.is_apple_silicon():
++    if nc.is_macos():
+         build_cmd.append( "toolset=clang" )
+-        build_cmd.append( "architecture=arm" )
++        build_cmd.append( "architecture=arm" if nc.is_arm64() else "architecture=x86" )
+         build_cmd.append( "address-model=64" )
+     build_cmd.append( "install" )
+ 
+diff --git a/Common/3dParty/build_3rdparty_common.py b/Common/3dParty/build_3rdparty_common.py
+index 8d328d45..5ad59d21 100644
+--- a/Common/3dParty/build_3rdparty_common.py
++++ b/Common/3dParty/build_3rdparty_common.py
+@@ -98,6 +98,9 @@ def target_arch() -> str:
+ def is_arm64() -> bool:
+     return target_arch() == "arm64"
+ 
++def is_macos() -> bool:
++    return sys.platform == "darwin"
++
+ def is_apple_silicon() -> bool:
+     return sys.platform == "darwin" and platform.machine() == "arm64"
+ 
+diff --git a/Common/3dParty/cef/nc-build.py b/Common/3dParty/cef/nc-build.py
+index 59833b82..4b3e61fb 100644
+--- a/Common/3dParty/cef/nc-build.py
++++ b/Common/3dParty/cef/nc-build.py
+@@ -74,8 +74,8 @@ def cef_platform() -> str:
+         return "windowsarm64" if nc.is_arm64() else "windows64"
+     elif nc.is_linux():
+         return "linuxarm64" if nc.is_arm64() else "linux64"
+-    elif nc.is_apple_silicon():
+-        return "macosarm64"
++    elif nc.is_macos():
++        return "macosarm64" if nc.is_arm64() else "macosx64"
+     else:
+         nc.abort_op( f"Unsupported platform for prebuilt CEF: {sys.platform}" )
+ 
+diff --git a/Common/3dParty/icu/nc-build.py b/Common/3dParty/icu/nc-build.py
+index 6edfebcb..7716a006 100644
+--- a/Common/3dParty/icu/nc-build.py
++++ b/Common/3dParty/icu/nc-build.py
+@@ -122,7 +122,7 @@ def build_and_install():
+             nc.work_dir / "icu" / "source"
+         )
+ 
+-    elif nc.is_apple_silicon():
++    elif nc.is_macos():
+         nc.run_command(
+             [   "./configure",
+                 f"--prefix={nc.install_dir}",
+diff --git a/Common/3dParty/openssl/nc-build.py b/Common/3dParty/openssl/nc-build.py
+index 2114bc34..bb245b29 100644
+--- a/Common/3dParty/openssl/nc-build.py
++++ b/Common/3dParty/openssl/nc-build.py
+@@ -77,7 +77,7 @@ def build_and_install():
+             nc.work_dir
+         )
+ 
+-    elif nc.is_apple_silicon():
++    elif nc.is_macos():
+         nc.run_command(
+             [   "./config",
+                 f"--prefix={nc.install_dir}",
+diff --git a/Common/3dParty/v8/nc-build.py b/Common/3dParty/v8/nc-build.py
+index 3016cea9..e9c5b93d 100644
+--- a/Common/3dParty/v8/nc-build.py
++++ b/Common/3dParty/v8/nc-build.py
+@@ -30,7 +30,7 @@ gn_source_path = nc.work_dir / "gn-source"
+ 
+ def check_prequisites():
+     tools_needed = [ "git", "python3" ]
+-    if nc.is_linux() or nc.is_apple_silicon():
++    if nc.is_linux() or nc.is_macos():
+         tools_needed.append( "clang" )
+         tools_needed.append( "ninja" )
+     for tool in tools_needed:
+@@ -334,7 +334,7 @@ def build_gn() -> Path:
+     env = {
+         "CC": "clang",
+         "CXX": "clang++"
+-    } if nc.is_linux() or nc.is_apple_silicon() else {
++    } if nc.is_linux() or nc.is_macos() else {
+         "CXXFLAGS": "/FIstring",
+         "CFLAGS": "/FIstring",
+     }
+@@ -459,7 +459,7 @@ cxx="clang++"
+ 
+         return gn_args
+ 
+-    elif nc.is_apple_silicon():
++    elif nc.is_macos():
+         clang_path = Path(shutil.which("clang"))
+         clang_dir = clang_path.parent.parent
+ 
+@@ -770,7 +770,7 @@ def build_and_install():
+     nc.run_command( [ "git", "clean", "-fdx" ], "Git clean", v8_src_path )
+     nc.run_command( [ "git", "fetch", "origin" ], "Git fetch", v8_src_path )
+ 
+-    if nc.is_apple_silicon():
++    if nc.is_macos():
+         disable_luci_go_cipd_dep()
+         disable_mac_toolchain_hook()
+ 
+@@ -822,7 +822,7 @@ solutions = [
+             v8_src_path / "build"
+         )
+ 
+-    if nc.is_linux() or nc.is_windows() or nc.is_apple_silicon():
++    if nc.is_linux() or nc.is_windows() or nc.is_macos():
+         if nc.is_windows():
+             nc.run_command(
+                 [ "cmd.exe", "/c", "gclient.bat", "sync", "--no-history", "--shallow" ],
+@@ -843,7 +843,7 @@ solutions = [
+         disable_cppgc()
+         fix_location_operand_bitfield_ub()
+         fix_oversized_enum_bitfields()
+-        if nc.is_apple_silicon():
++        if nc.is_macos():
+             disable_zlib_mac_fdopen_macro()
+         gn_bin_path = build_gn()
+ 
+@@ -881,7 +881,7 @@ solutions = [
+             gn_rt_env[ "DEPOT_TOOLS_WIN_TOOLCHAIN" ] = "0"
+             gn_rt_env[ "vs2022_install" ] = str( Path( os.environ[ "VSINSTALLDIR" ] ) )
+ 
+-        if nc.is_apple_silicon():
++        if nc.is_macos():
+             # Make sure the bare "python"/"python3" that GN's exec_script()
+             # calls resolve to an interpreter with pkg_resources available
+             # (see get_gn_hermetic_check_python()), without touching the
+@@ -913,7 +913,7 @@ solutions = [
+         env = {
+             "CC": "clang",
+             "CXX": "clang++"
+-        } if nc.is_linux() or nc.is_apple_silicon() else {
++        } if nc.is_linux() or nc.is_macos() else {
+             # "CXXFLAGS": "/FIstring /Zm300",
+             # "CFLAGS": "/FIstring /Zm300",
+             "CL": "/FIstring /Zm300",

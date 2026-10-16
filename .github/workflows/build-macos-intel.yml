@@ -78,6 +78,12 @@ jobs:
           mkdir -p build/deploy/common
           tar -xf payload/common.tar -C build/deploy/common
 
+      - name: Enable native Intel dependency builds
+        run: |
+          python3 -m unittest discover -s build/macos/tests -v
+          git -C core apply --check ../build/macos/intel-dependencies.patch
+          git -C core apply ../build/macos/intel-dependencies.patch
+
       - name: Install build prerequisites
         run: brew install ninja autoconf automake libtool pkg-config ccache
 

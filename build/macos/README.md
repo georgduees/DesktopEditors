@@ -46,7 +46,14 @@ while its artifact remains available.
 
 The workflow uses `x64-osx` dependencies and explicitly builds the shared
 `Euro-Office-arm` scheme for `x86_64`, clearing its Intel architecture
-exclusion and replacing its Apple Silicon preprocessor flag. It checks all
+exclusion and replacing its Apple Silicon preprocessor flag. Before building,
+it applies `intel-dependencies.patch` to the pinned core sources: Boost, ICU,
+OpenSSL, V8 and CEF otherwise only recognize Apple Silicon as macOS.
+The patch enables native macOS builds for both architectures and selects
+Intel's Boost architecture and CEF distribution without changing the web
+payload. Its platform-selection tests run with
+`python3 -m unittest discover -s build/macos/tests -v` against an unmodified
+core checkout. It checks all
 bundled Mach-O binaries for Intel support, verifies the application signature
 and DMG integrity, and uploads:
 
