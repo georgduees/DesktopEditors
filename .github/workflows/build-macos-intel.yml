@@ -1,0 +1,208 @@
+name: Build Euro-Office Intel DMG
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_run_id:
+        description: Successful Euro-Office/DesktopEditors run containing a matching common-files-euro-office artifact
+        required: true
+        type: string
+      publish_release:
+        description: Publish the verified DMG as a prerelease in this repository
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: macos-intel-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 360
+    env:
+      REPO: ${{ github.workspace }}
+      EO_3RDPARTY: ${{ github.workspace }}/eo-3rdparty
+      STAGE: ${{ github.workspace }}/macos-stage
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    outputs:
+      version: ${{ steps.payload.outputs.version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          submodules: recursive
+
+      - name: Verify Intel host and matching upstream payload
+        id: payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_RUN_ID: ${{ inputs.upstream_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          if [[ ! "$UPSTREAM_RUN_ID" =~ ^[0-9]+$ ]]; then
+            echo "::error::upstream_run_id must be a numeric GitHub Actions run ID."
+            exit 1
+          fi
+          gh api "repos/Euro-Office/DesktopEditors/actions/runs/${UPSTREAM_RUN_ID}" > "$RUNNER_TEMP/upstream-run.json"
+          jq -e '.conclusion == "success" and .head_repository.full_name == "Euro-Office/DesktopEditors"' \
+            "$RUNNER_TEMP/upstream-run.json"
+          source_sha="$(jq -r .head_sha "$RUNNER_TEMP/upstream-run.json")"
+          gh api "repos/Euro-Office/DesktopEditors/git/trees/${source_sha}" > "$RUNNER_TEMP/upstream-tree.json"
+          jq -r '.tree[] | select(.mode == "160000" or .path == "VERSION.txt") | [.path, .sha] | @tsv' \
+            "$RUNNER_TEMP/upstream-tree.json" | LC_ALL=C sort > "$RUNNER_TEMP/upstream-sources"
+          git ls-tree HEAD | awk '$1 == "160000" || $4 == "VERSION.txt" {print $4 "\t" $3}' \
+            | LC_ALL=C sort > "$RUNNER_TEMP/local-sources"
+          if ! diff -u "$RUNNER_TEMP/upstream-sources" "$RUNNER_TEMP/local-sources"; then
+            echo "::error::The payload's submodule revisions or version differ from this checkout. Select a matching upstream run."
+            exit 1
+          fi
+          echo "version=$(tr -d '[:space:]' < VERSION.txt)" >> "$GITHUB_OUTPUT"
+          echo "Using public Euro-Office payload from ${source_sha}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/download-artifact@v4
+        with:
+          repository: Euro-Office/DesktopEditors
+          run-id: ${{ inputs.upstream_run_id }}
+          github-token: ${{ github.token }}
+          name: common-files-euro-office
+          path: payload
+
+      - name: Extract common payload
+        run: |
+          mkdir -p build/deploy/common
+          tar -xf payload/common.tar -C build/deploy/common
+
+      - name: Install build prerequisites
+        run: brew install ninja autoconf automake libtool pkg-config ccache
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: core/vcpkg.json
+
+      - name: Restore Intel third-party dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.EO_3RDPARTY }}
+          key: macos-intel-3rdparty-${{ hashFiles('core/Common/3dParty/**/*.py') }}
+
+      - name: Restore Intel compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: macos-intel-ccache-${{ github.sha }}
+          restore-keys: macos-intel-ccache-
+
+      - name: Build Intel desktop-sdk
+        run: |
+          cmake -S "${REPO}/desktop-sdk/ChromiumBasedEditors/lib" -B build-mac-sdk \
+            -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_DESKTOP=1 \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_TOOLCHAIN_FILE="${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=x64-osx \
+            -DVCPKG_MANIFEST_MODE=ON \
+            -DVCPKG_MANIFEST_DIR="${REPO}/core" \
+            -DEO_CORE_3RD_PARTY_DIR="${EO_3RDPARTY}" \
+            -DEO_CORE_OUTPUT_DIR="${STAGE}/converter"
+          cmake --build build-mac-sdk --parallel 3
+
+      - name: Stage the build
+        run: |
+          ./build/macos/stage.sh \
+            --stage-dir "${STAGE}" \
+            --3rdparty-dir "${EO_3RDPARTY}"
+
+      - name: Apply Euro-Office branding
+        env:
+          PRODUCT_VERSION: ${{ steps.payload.outputs.version }}
+        run: |
+          ./desktop-apps/macos/apply-branding.sh \
+            --company-name Euro-Office \
+            --product-name Euro-Office \
+            --version "$PRODUCT_VERSION"
+
+      - name: Build Intel Xcode application
+        run: |
+          xcodebuild -project desktop-apps/macos/Euro-Office.xcodeproj \
+            -scheme Euro-Office-arm -configuration Release \
+            ARCHS=x86_64 EXCLUDED_ARCHS= ONLY_ACTIVE_ARCH=NO \
+            'GCC_PREPROCESSOR_DEFINITIONS=_MAC _PRODUCT_ONLYOFFICE _X86_64_ONLY URL_WEBAPPS_HELP=\@\"$(URL_WEBAPPS_HELP)\"' \
+            CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
+            EO_MAC_STAGE_DIR="${STAGE}" \
+            CONFIGURATION_BUILD_DIR="${REPO}/build/macos/out" \
+            build
+
+      - name: Verify native binaries and application signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="${REPO}/build/macos/out/Euro-Office.app"
+          for binary in \
+            "$app/Contents/MacOS/Euro-Office" \
+            "$app/Contents/Resources/converter/x2t" \
+            "$app/Contents/Frameworks/ascdocumentscore.framework/ascdocumentscore" \
+            "$app/Contents/Frameworks/ooxmlsignature.framework/ooxmlsignature" \
+            "$app/Contents/Frameworks/Chromium Embedded Framework.framework/Chromium Embedded Framework" \
+            "$app/Contents/Frameworks/editors_helper.app/Contents/MacOS/editors_helper" \
+            "$app/Contents/Frameworks/editors_helper (GPU).app/Contents/MacOS/editors_helper (GPU)" \
+            "$app/Contents/Frameworks/editors_helper (Renderer).app/Contents/MacOS/editors_helper (Renderer)"; do
+            test -f "$binary"
+            lipo -verify_arch x86_64 "$binary"
+          done
+          while IFS= read -r -d '' binary; do
+            if file -b "$binary" | grep -q 'Mach-O'; then
+              lipo -verify_arch x86_64 "$binary"
+            fi
+          done < <(find "$app" -type f -print0)
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+      - name: Package and verify DMG
+        run: |
+          ./build/macos/make-dmg.sh \
+            --app build/macos/out/Euro-Office.app \
+            --output build/macos/out/Euro-Office-macos-x86_64.dmg
+          hdiutil verify build/macos/out/Euro-Office-macos-x86_64.dmg
+          cd build/macos/out
+          shasum -a 256 Euro-Office-macos-x86_64.dmg > Euro-Office-macos-x86_64.dmg.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-packages-euro-office-x86_64
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            build/macos/out/Euro-Office-macos-x86_64.dmg
+            build/macos/out/Euro-Office-macos-x86_64.dmg.sha256
+
+  publish:
+    if: inputs.publish_release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-packages-euro-office-x86_64
+          path: dist
+
+      - name: Publish Intel community prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PRODUCT_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "intel-${PRODUCT_VERSION}-${GITHUB_RUN_NUMBER}" \
+            --target "$GITHUB_SHA" \
+            --title "Euro-Office ${PRODUCT_VERSION} for Intel Mac" \
+            --prerelease \
+            --notes "Community Intel (x86_64) build. Ad-hoc signed, not Apple-notarized. Built by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Includes a SHA-256 checksum." \
+            dist/Euro-Office-macos-x86_64.dmg \
+            dist/Euro-Office-macos-x86_64.dmg.sha256

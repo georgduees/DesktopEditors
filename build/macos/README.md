@@ -28,6 +28,37 @@ onto a built `desktop-sdk` tree and generating fonts/theme thumbnails. It does
   mkdir -p build/deploy/common && tar -xf build/deploy/common.tar -C build/deploy/common
   ```
 
+## Intel DMG builds in a public fork
+
+The **Build Euro-Office Intel DMG** workflow
+(`.github/workflows/build-macos-intel.yml`) builds on `macos-15-intel` without
+the private Nextcloud branding repository or release credentials. It reuses
+the public `common-files-euro-office` artifact from a successful
+[upstream build](https://github.com/Euro-Office/DesktopEditors/actions/workflows/build.yml).
+All submodule revisions and `VERSION.txt` must match that run; the workflow
+checks them before building. Expired artifacts cannot be used.
+
+In your fork's **Actions** tab, enable workflows if necessary, select
+**Build Euro-Office Intel DMG**, and choose **Run workflow**. Supply the numeric
+upstream run ID from its URL (`.../actions/runs/<id>`). For example, run
+`38873811426` matches commit `5299de5157de1f11e76c5075e36107185968fab8`
+while its artifact remains available.
+
+The workflow uses `x64-osx` dependencies and explicitly builds the shared
+`Euro-Office-arm` scheme for `x86_64`, clearing its Intel architecture
+exclusion and replacing its Apple Silicon preprocessor flag. It checks all
+bundled Mach-O binaries for Intel support, verifies the application signature
+and DMG integrity, and uploads:
+
+- `Euro-Office-macos-x86_64.dmg`
+- `Euro-Office-macos-x86_64.dmg.sha256`
+
+Download them from the `macos-packages-euro-office-x86_64` workflow artifact.
+Select **Publish the verified DMG as a prerelease** to also create a public
+download on **your fork's** Releases page. This never publishes to upstream
+or Nextcloud repositories. The build is ad-hoc signed, not Apple-notarized;
+macOS may require approval in **System Settings > Privacy & Security**.
+
 ## The steps
 
 Set these once and reuse them across all the steps below:
